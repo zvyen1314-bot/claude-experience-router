@@ -1,0 +1,22 @@
+{
+  "id": "thought-garden",
+  "version": "0.2.0",
+  "name": "Thought Garden",
+  "tagline": "把刚刚冒出的想法整理成下一步",
+  "description": "将散乱的想法整理为主题、假设和可执行的下一步，保留用户对内容的控制权。",
+  "category": "reflection",
+  "triggers": ["帮我整理想法", "我有个模糊的点子", "想理清思路", "把这些记录下来"],
+  "capabilities": ["idea_clustering", "reflection", "next_step_generation"],
+  "riskLevel": "low",
+  "ui": "inline",
+  "memory": {
+    "reads": ["user-selected conversation excerpts"],
+    "writes": ["user-approved notes"]
+  },
+  "status": "ready",
+  "runtime": "controlled-js",
+  "publisher": {
+    "name": "Conversational Experience Router"
+  },
+  "starterPrompt": "把我刚才说的内容整理成：核心想法、尚未确认的假设、一个最小下一步。先让我确认再保存。"
+}

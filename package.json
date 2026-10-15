@@ -1,15 +1,17 @@
 {
-  "name": "claude-experience-router",
+  "name": "conversational-experience-router",
   "version": "0.1.0",
   "private": true,
-  "description": "A safety-first MCP extension that routes Claude conversations into reusable experiences.",
+  "description": "A safety-first experience layer for conversational AI, with a Claude MCP reference adapter.",
   "type": "module",
   "bin": {
-    "claude-experience-router": "dist/index.js"
+    "conversational-experience-router": "dist/index.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test test/runtime.test.mjs",
+    "validate-module": "npm run build --silent && node scripts/validate-module.mjs",
     "start": "node dist/index.js"
   },
   "dependencies": {

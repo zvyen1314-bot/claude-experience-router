@@ -1,0 +1,22 @@
+{
+  "id": "social-pulse",
+  "version": "0.2.0",
+  "name": "Social Pulse",
+  "tagline": "从你此刻的兴趣出发，找到值得认识的人和话题",
+  "description": "根据当前对话中明确表达的兴趣，推荐公开帖子、讨论主题和可能聊得来的人。",
+  "category": "social",
+  "triggers": ["想找真人社交", "想认识新朋友", "想看看别人都在聊什么", "推荐帖子"],
+  "capabilities": ["topic_recommendation", "people_discovery", "private_messaging"],
+  "riskLevel": "medium",
+  "ui": "web",
+  "memory": {
+    "reads": ["user-approved interests"],
+    "writes": ["saved topics", "conversation preferences"]
+  },
+  "status": "ready",
+  "runtime": "controlled-js",
+  "publisher": {
+    "name": "Conversational Experience Router"
+  },
+  "starterPrompt": "先展示 3 个与你此刻兴趣相近的公开话题，并说明每个话题适合怎样开始聊天。"
+}

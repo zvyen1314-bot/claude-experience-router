@@ -1,0 +1,22 @@
+{
+  "id": "three-minute-mystery",
+  "version": "0.2.0",
+  "name": "Three Minute Mystery",
+  "tagline": "三分钟，玩一个刚好适合现在的小游戏",
+  "description": "根据心情和可用时间生成一个轻量的文字推理小游戏，适合在当前对话里立即开始。",
+  "category": "game",
+  "triggers": ["我很无聊", "想玩个小游戏", "来点有趣的", "只有几分钟"],
+  "capabilities": ["text_game", "adaptive_difficulty", "session_scoring"],
+  "riskLevel": "low",
+  "ui": "web",
+  "memory": {
+    "reads": ["available time", "game preferences"],
+    "writes": ["game score"]
+  },
+  "status": "ready",
+  "runtime": "controlled-js",
+  "publisher": {
+    "name": "Conversational Experience Router"
+  },
+  "starterPrompt": "给我一个 3 分钟内能完成的文字推理谜题，只展示第一条线索，等我回答后再推进。"
+}
