@@ -1,5 +1,9 @@
 # Conversational Experience Router
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Node.js](https://img.shields.io/badge/Node.js-%E2%89%A520-brightgreen)](https://nodejs.org/)
+[![MCP](https://img.shields.io/badge/MCP-compatible-7c3aed)](https://modelcontextprotocol.io)
+
 > [简体中文](#conversational-experience-router-1) | English
 
 An open experience layer for conversational AI. It routes user intents — "I'm bored", "help me organize this idea", "I want to chat about something" — into experiences that can start right away.
