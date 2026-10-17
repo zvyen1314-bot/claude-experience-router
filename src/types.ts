@@ -1,6 +1,7 @@
 export type ExperienceCategory = "social" | "game" | "reflection";
 export type RiskLevel = "low" | "medium";
 export type UiSurface = "inline" | "web" | "native";
+export type ModuleSignatureStatus = "trusted" | "signed" | "unsigned" | "invalid";
 
 export interface MemoryBoundary {
   reads: string[];
@@ -25,6 +26,35 @@ export interface ExperienceManifest {
   starterPrompt: string;
 }
 
+export interface ModuleSignature {
+  protocol: "experience-signature/v1";
+  algorithm: "ed25519";
+  key_id: string;
+  public_key: string;
+  module_id: string;
+  module_version: string;
+  manifest_sha256: string;
+  entry_sha256: string;
+  signature: string;
+  signed_at: string;
+}
+
+export interface ModuleVersionRecord {
+  version: string;
+  published_at: string;
+  signature_status: ModuleSignatureStatus;
+  manifest_sha256: string;
+  entry_sha256: string;
+}
+
+export interface ExperienceRegistryEntry {
+  manifest: ExperienceManifest;
+  source: "local";
+  signature_status: ModuleSignatureStatus;
+  signature?: ModuleSignature;
+  versions: ModuleVersionRecord[];
+}
+
 export interface ExperienceRecommendation {
   experience: ExperienceManifest;
   matchScore: number;
@@ -39,6 +69,8 @@ export interface LaunchResult {
   message: string;
   consentToken?: string;
   consentExpiresAt?: string;
+  consentReceiptId?: string;
+  consentPolicy?: import("./protocol.js").ConsentPolicy;
   sessionId?: string;
   entrypoint?: string;
   expiresAt?: string;
@@ -48,11 +80,14 @@ export interface LaunchResult {
 
 export interface ConsentRequest {
   experienceId: string;
+  consentReceiptId: string;
   title: string;
   message: string;
   scopes: string[];
   consentToken: string;
   expiresAt: string;
+  policy: import("./protocol.js").ConsentPolicy;
+  contextFields: string[];
 }
 
 export type SessionStatus = "active" | "completed" | "finished" | "expired";
@@ -81,6 +116,8 @@ export interface ExperienceSession {
   expiresAt: string;
   state: SessionState;
   events: SessionEvent[];
+  contextEnvelope?: import("./protocol.js").ContextEnvelope;
+  consentPolicy: import("./protocol.js").ConsentPolicy;
 }
 
 export interface SessionSnapshot {

@@ -10,8 +10,8 @@
   "riskLevel": "medium",
   "ui": "web",
   "memory": {
-    "reads": ["user-approved interests"],
-    "writes": ["saved topics", "conversation preferences"]
+    "reads": ["interests", "social_preference"],
+    "writes": ["saved_topics", "conversation_preferences"]
   },
   "status": "ready",
   "runtime": "controlled-js",

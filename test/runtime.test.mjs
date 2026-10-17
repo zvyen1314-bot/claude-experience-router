@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { ExperienceRuntime } from "../dist/runtime.js";
 import { loadDefaultModuleRegistry } from "../dist/registry.js";
+import { createContextEnvelope } from "../dist/protocol.js";
 import { startExperienceWebServer } from "../dist/web.js";
 
 async function createRuntime() {
@@ -23,6 +24,33 @@ test("consent tokens are scoped and single use", async () => {
 
   const replay = await runtime.launch(request.experienceId, request.consentToken);
   assert.equal(replay.status, "invalid_consent");
+  assert.equal(runtime.getConsentStatus(request.consentReceiptId).status, "used");
+});
+
+test("context is portable while consent is scoped and revocable", async () => {
+  const runtime = await createRuntime();
+  const envelope = createContextEnvelope({
+    intent: "我想找一个公开话题",
+    interests: ["AI product design"],
+    availableTimeMinutes: 10,
+    socialPreference: "public_topics",
+  });
+  const request = runtime.prepareLaunch("social-pulse", envelope, ["interests"]);
+  assert.equal(request.status, "consent_required");
+  assert.deepEqual(request.policy.allowed_reads, ["interests"]);
+  assert.deepEqual(request.policy.allowed_writes, []);
+  assert.deepEqual(request.contextFields, ["intent", "interests", "available_time_minutes", "social_preference"]);
+
+  const revoked = runtime.revokeConsent(request.consentReceiptId);
+  assert.equal(revoked.status, "revoked");
+  const launch = await runtime.launch(request.experienceId, request.consentToken);
+  assert.equal(launch.status, "invalid_consent");
+});
+
+test("unsupported requested scopes are rejected", async () => {
+  const runtime = await createRuntime();
+  const request = runtime.prepareLaunch("social-pulse", undefined, ["raw_conversation_history"]);
+  assert.equal(request.status, "invalid_scope");
 });
 
 test("a mystery session can complete through events", async () => {

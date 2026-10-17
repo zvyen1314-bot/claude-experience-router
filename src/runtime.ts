@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { ModuleRegistry } from "./registry.js";
 import type { ExperienceContext, ExperienceModule } from "./module-api.js";
+import { buildConsentPolicy, contextEnvelopeSchema, scopeContext, type ConsentPolicy, type ContextEnvelope } from "./protocol.js";
 import type {
   ConsentRequest,
   ExperienceSession,
@@ -19,12 +20,28 @@ interface StoredConsent {
   experienceId: string;
   expiresAt: number;
   used: boolean;
+  policy: ConsentPolicy;
+  contextEnvelope?: ContextEnvelope;
+  receiptId: string;
+  revoked: boolean;
 }
+
+export type PrepareLaunchResult =
+  | ({ status: "consent_required" } & ConsentRequest)
+  | { status: "not_found" | "invalid_context" | "invalid_scope"; message: string; experienceId: string };
 
 export interface SessionActionResult {
   status: "ok" | "invalid" | "expired" | "finished";
   message: string;
   snapshot?: SessionSnapshot;
+}
+
+export interface ConsentStatusResult {
+  status: "active" | "used" | "expired" | "revoked" | "not_found";
+  consentReceiptId: string;
+  experienceId?: string;
+  policy?: ConsentPolicy;
+  expiresAt?: string;
 }
 
 export class ExperienceRuntime {
@@ -38,28 +55,56 @@ export class ExperienceRuntime {
     this.baseUrl = baseUrl.replace(/\/$/, "");
   }
 
-  prepareLaunch(experienceId: string): ConsentRequest | undefined {
+  prepareLaunch(experienceId: string, contextInput?: unknown, requestedScopes: string[] = []): PrepareLaunchResult {
     const experience = this.registry.get(experienceId)?.manifest;
-    if (!experience) return undefined;
+    if (!experience) return { status: "not_found", experienceId, message: "找不到这个体验模块。" };
+
+    let contextEnvelope: ContextEnvelope | undefined;
+    if (contextInput !== undefined) {
+      const parsed = contextEnvelopeSchema.safeParse(contextInput);
+      if (!parsed.success || (parsed.data.expires_at && Date.parse(parsed.data.expires_at) <= Date.now())) {
+        return { status: "invalid_context", experienceId, message: "Context Envelope 格式无效或已过期。" };
+      }
+      contextEnvelope = parsed.data;
+    }
+
+    let policy: ConsentPolicy;
+    try {
+      policy = buildConsentPolicy(experience, requestedScopes);
+    } catch (error) {
+      return { status: "invalid_scope", experienceId, message: error instanceof Error ? error.message : "授权范围无效。" };
+    }
 
     this.prune();
     const now = Date.now();
     const expiresAt = now + CONSENT_TTL_MS;
     const token = randomBytes(24).toString("base64url");
-    this.consents.set(hashToken(token), {
+    const tokenHash = hashToken(token);
+    const receiptId = `consent-${randomUUID().slice(0, 8)}`;
+    this.consents.set(tokenHash, {
       tokenHash: hashToken(token),
       experienceId,
       expiresAt,
       used: false,
+      policy,
+      contextEnvelope,
+      receiptId,
+      revoked: false,
     });
 
     return {
+      status: "consent_required",
       experienceId,
+      consentReceiptId: receiptId,
       title: experience.name,
-      message: `启动“${experience.name}”前，请确认允许它读取：${experience.memory.reads.join("、") || "无额外数据"}；写入：${experience.memory.writes.join("、") || "无"}。授权将在 5 分钟后失效，且只能使用一次。`,
-      scopes: [...experience.memory.reads, ...experience.memory.writes],
+      message: `启动“${experience.name}”前，请确认允许它读取：${policy.allowed_reads.join("、") || "无额外数据"}；写入：${policy.allowed_writes.join("、") || "无"}。授权将在 5 分钟后失效，且只能使用一次。`,
+      scopes: [...policy.allowed_reads, ...policy.allowed_writes],
       consentToken: token,
       expiresAt: new Date(expiresAt).toISOString(),
+      policy,
+      contextFields: Object.entries(contextEnvelope?.fields ?? {})
+        .filter(([, value]) => value !== undefined)
+        .map(([key]) => key),
     };
   }
 
@@ -77,6 +122,7 @@ export class ExperienceRuntime {
     const consent = this.consents.get(hashToken(consentToken));
     const valid = consent &&
       !consent.used &&
+      !consent.revoked &&
       consent.experienceId === experienceId &&
       consent.expiresAt > Date.now() &&
       consent.tokenHash === hashToken(consentToken);
@@ -91,7 +137,7 @@ export class ExperienceRuntime {
     }
 
     consent.used = true;
-    const session = await this.createSession(module);
+    const session = await this.createSession(module, consent.contextEnvelope, consent.policy);
     return {
       status: "launched",
       experienceId,
@@ -103,6 +149,8 @@ export class ExperienceRuntime {
       expiresAt: session.expiresAt,
       nextPrompt: module.manifest.starterPrompt,
       demoData: { mode: "session", state: session.state },
+      consentReceiptId: consent.receiptId,
+      consentPolicy: consent.policy,
     };
   }
 
@@ -161,13 +209,44 @@ export class ExperienceRuntime {
     return this.submitEvent(sessionId, "finish");
   }
 
-  private async createSession(module: ExperienceModule): Promise<ExperienceSession> {
+  getConsentStatus(receiptId: string): ConsentStatusResult {
+    const consent = this.findConsent(receiptId);
+    if (!consent) return { status: "not_found", consentReceiptId: receiptId };
+    const status = consent.revoked
+      ? "revoked"
+      : consent.used
+        ? "used"
+        : consent.expiresAt <= Date.now()
+          ? "expired"
+          : "active";
+    return {
+      status,
+      consentReceiptId: consent.receiptId,
+      experienceId: consent.experienceId,
+      policy: consent.policy,
+      expiresAt: new Date(consent.expiresAt).toISOString(),
+    };
+  }
+
+  revokeConsent(receiptId: string): ConsentStatusResult {
+    const consent = this.findConsent(receiptId);
+    if (!consent) return { status: "not_found", consentReceiptId: receiptId };
+    if (!consent.used && consent.expiresAt > Date.now()) consent.revoked = true;
+    return this.getConsentStatus(receiptId);
+  }
+
+  private async createSession(
+    module: ExperienceModule,
+    contextEnvelope: ContextEnvelope | undefined,
+    consentPolicy: ConsentPolicy,
+  ): Promise<ExperienceSession> {
     const now = Date.now();
     const id = `session-${randomUUID().slice(0, 8)}`;
     const context: ExperienceContext = {
       sessionId: id,
       experienceId: module.manifest.id,
-      approvedContext: {},
+      approvedContext: scopeContext(contextEnvelope, consentPolicy),
+      consentPolicy,
       now: new Date(now).toISOString(),
     };
     const state = normalizeState(await module.start(context));
@@ -179,6 +258,8 @@ export class ExperienceRuntime {
       expiresAt: new Date(now + SESSION_TTL_MS).toISOString(),
       state,
       events: [],
+      contextEnvelope,
+      consentPolicy,
     };
     this.sessions.set(session.id, session);
     return session;
@@ -188,7 +269,8 @@ export class ExperienceRuntime {
     return {
       sessionId: session.id,
       experienceId: session.experienceId,
-      approvedContext: {},
+      approvedContext: scopeContext(session.contextEnvelope, session.consentPolicy),
+      consentPolicy: session.consentPolicy,
       now: new Date().toISOString(),
     };
   }
@@ -203,12 +285,19 @@ export class ExperienceRuntime {
   private prune(): void {
     const now = Date.now();
     for (const [tokenHash, consent] of this.consents) {
-      if (consent.used || consent.expiresAt <= now) this.consents.delete(tokenHash);
+      if (consent.expiresAt + SESSION_TTL_MS <= now) this.consents.delete(tokenHash);
     }
     for (const [id, session] of this.sessions) {
       this.expireIfNeeded(session);
       if (session.status === "expired" && Date.parse(session.expiresAt) + SESSION_TTL_MS <= now) this.sessions.delete(id);
     }
+  }
+
+  private findConsent(receiptId: string): StoredConsent | undefined {
+    for (const consent of this.consents.values()) {
+      if (consent.receiptId === receiptId) return consent;
+    }
+    return undefined;
   }
 }
 

@@ -10,8 +10,8 @@
   "riskLevel": "low",
   "ui": "inline",
   "memory": {
-    "reads": ["user-selected conversation excerpts"],
-    "writes": ["user-approved notes"]
+    "reads": ["selected_excerpts"],
+    "writes": ["approved_notes"]
   },
   "status": "ready",
   "runtime": "controlled-js",

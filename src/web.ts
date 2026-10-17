@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { PublicTopicService, type ModerationReportStatus } from "./public-topics.js";
 import type { SessionSnapshot } from "./types.js";
 import { ExperienceRuntime } from "./runtime.js";
 
@@ -10,9 +11,10 @@ export interface ExperienceWebServer {
 export async function startExperienceWebServer(
   runtime: ExperienceRuntime,
   requestedPort: number,
+  topics = new PublicTopicService(),
 ): Promise<ExperienceWebServer> {
   const server = createServer((request, response) => {
-    void handleRequest(request, response, runtime);
+    void handleRequest(request, response, runtime, topics);
   });
   const port = await listen(server, requestedPort);
   const baseUrl = `http://127.0.0.1:${port}`;
@@ -50,6 +52,7 @@ async function handleRequest(
   request: IncomingMessage,
   response: ServerResponse,
   runtime: ExperienceRuntime,
+  topics: PublicTopicService,
 ): Promise<void> {
   try {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
@@ -62,6 +65,11 @@ async function handleRequest(
 
     if (path.startsWith("/api/sessions/")) {
       await handleSessionApi(request, response, runtime, url);
+      return;
+    }
+
+    if (path === "/api/topics" || path.startsWith("/api/topics/") || path.startsWith("/api/rooms/") || path.startsWith("/api/moderation/")) {
+      await handleTopicApi(request, response, topics, url);
       return;
     }
 
@@ -84,6 +92,134 @@ async function handleRequest(
     sendJson(response, 404, { error: "not_found" });
   } catch (error) {
     sendJson(response, 500, { error: error instanceof Error ? error.message : "internal_error" });
+  }
+}
+
+async function handleTopicApi(
+  request: IncomingMessage,
+  response: ServerResponse,
+  topics: PublicTopicService,
+  url: URL,
+): Promise<void> {
+  try {
+    const parts = url.pathname.split("/").filter(Boolean);
+    if (request.method === "GET" && parts.length === 2 && parts[1] === "topics") {
+      sendJson(response, 200, {
+        protocol: "public-topics/v1",
+        topics: topics.discover({
+          actorId: url.searchParams.get("actor_id") ?? "local-user",
+          query: url.searchParams.get("query") ?? undefined,
+          interests: url.searchParams.getAll("interest"),
+          limit: Number.parseInt(url.searchParams.get("limit") ?? "10", 10),
+        }),
+      });
+      return;
+    }
+
+    if (request.method === "POST" && parts.length === 2 && parts[1] === "topics") {
+      const body = await readJson(request);
+      sendJson(response, 201, {
+        status: "created",
+        topic: topics.createTopic({
+          actorId: requireString(body.actor_id, "actor_id"),
+          title: requireString(body.title, "title"),
+          body: requireString(body.body, "body"),
+          tags: stringArray(body.tags),
+        }),
+      });
+      return;
+    }
+
+    if (request.method === "POST" && parts.length === 4 && parts[1] === "topics" && parts[3] === "join") {
+      const body = await readJson(request);
+      sendJson(response, 200, {
+        status: "joined",
+        room: topics.joinRoom(parts[2], requireString(body.actor_id, "actor_id")),
+      });
+      return;
+    }
+
+    if (request.method === "GET" && parts.length === 2 && parts[1] === "rooms") {
+      sendJson(response, 400, { error: "missing_room_id" });
+      return;
+    }
+
+    if (request.method === "GET" && parts.length === 3 && parts[1] === "rooms") {
+      sendJson(response, 200, {
+        status: "ok",
+        room: topics.getRoom(parts[2], url.searchParams.get("actor_id") ?? "local-user"),
+      });
+      return;
+    }
+
+    if (request.method === "POST" && parts.length === 4 && parts[1] === "rooms" && parts[3] === "messages") {
+      const body = await readJson(request);
+      sendJson(response, 201, {
+        status: "posted",
+        room: topics.postMessage(parts[2], requireString(body.actor_id, "actor_id"), requireString(body.body, "body")),
+      });
+      return;
+    }
+
+    if (request.method === "GET" && parts.length === 3 && parts[1] === "moderation" && parts[2] === "reports") {
+      const status = url.searchParams.get("status");
+      const allowedStatuses: ModerationReportStatus[] = ["queued", "dismissed", "hidden", "restored"];
+      if (status && !allowedStatuses.includes(status as ModerationReportStatus)) {
+        sendJson(response, 400, { error: "unsupported_report_status" });
+        return;
+      }
+      sendJson(response, 200, { reports: topics.listReports(status as ModerationReportStatus | undefined) });
+      return;
+    }
+
+    if (request.method === "POST" && parts.length === 3 && parts[1] === "moderation" && parts[2] === "reports") {
+      const body = await readJson(request);
+      sendJson(response, 201, {
+        status: "queued",
+        report: topics.report({
+          reporterId: requireString(body.reporter_id, "reporter_id"),
+          targetType: body.target_type === "message" ? "message" : "topic",
+          targetId: requireString(body.target_id, "target_id"),
+          reason: requireString(body.reason, "reason"),
+        }),
+      });
+      return;
+    }
+
+    if (request.method === "POST" && parts.length === 5 && parts[1] === "moderation" && parts[2] === "reports" && parts[4] === "review") {
+      const body = await readJson(request);
+      const decision = body.decision;
+      if (decision !== "dismiss" && decision !== "hide" && decision !== "restore") {
+        sendJson(response, 400, { error: "unsupported_review_decision" });
+        return;
+      }
+      sendJson(response, 200, {
+        status: "reviewed",
+        report: topics.reviewReport(parts[3], requireString(body.reviewer_id, "reviewer_id"), decision),
+      });
+      return;
+    }
+
+    if (request.method === "POST" && parts.length === 3 && parts[1] === "moderation" && parts[2] === "blocks") {
+      const body = await readJson(request);
+      sendJson(response, 200, topics.blockActor(requireString(body.actor_id, "actor_id"), requireString(body.blocked_actor_id, "blocked_actor_id")));
+      return;
+    }
+
+    if (request.method === "DELETE" && parts.length === 3 && parts[1] === "moderation" && parts[2] === "blocks") {
+      const actorId = url.searchParams.get("actor_id");
+      const blockedActorId = url.searchParams.get("blocked_actor_id");
+      if (!actorId || !blockedActorId) {
+        sendJson(response, 400, { error: "missing_actor_id" });
+        return;
+      }
+      sendJson(response, 200, topics.unblockActor(actorId, blockedActorId));
+      return;
+    }
+
+    sendJson(response, 404, { error: "not_found" });
+  } catch (error) {
+    sendJson(response, 400, { error: error instanceof Error ? error.message : "invalid_request" });
   }
 }
 
@@ -236,6 +372,17 @@ function renderExperiencePage(snapshot: SessionSnapshot): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function requireString(value: unknown, field: string): string {
+  if (typeof value !== "string") throw new Error(`${field} must be a string`);
+  return value;
+}
+
+function stringArray(value: unknown): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) throw new Error("tags must be an array of strings");
+  return value;
 }
 
 async function readJson(request: IncomingMessage): Promise<Record<string, unknown>> {

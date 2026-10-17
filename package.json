@@ -1,6 +1,6 @@
 {
   "name": "conversational-experience-router",
-  "version": "0.1.0",
+  "version": "0.5.0",
   "private": true,
   "description": "A safety-first experience layer for conversational AI, with a Claude MCP reference adapter.",
   "type": "module",
@@ -10,8 +10,14 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node --test test/runtime.test.mjs",
+    "test": "npm run build && node --test test/runtime.test.mjs test/create-module.test.mjs test/import-module.test.mjs test/public-topics.test.mjs test/registry-tools.test.mjs",
     "validate-module": "npm run build --silent && node scripts/validate-module.mjs",
+    "create-module": "node scripts/create-module.mjs",
+    "import-module": "npm run build --silent && node scripts/import-module.mjs",
+    "create-publisher-key": "node scripts/create-publisher-key.mjs",
+    "sign-module": "npm run build --silent && node scripts/sign-module.mjs",
+    "verify-module": "npm run build --silent && node scripts/verify-module.mjs",
+    "build-registry-index": "npm run build --silent && node scripts/build-registry-index.mjs",
     "start": "node dist/index.js"
   },
   "dependencies": {

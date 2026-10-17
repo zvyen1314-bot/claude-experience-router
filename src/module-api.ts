@@ -1,9 +1,11 @@
 import type { ExperienceManifest, SessionEvent, SessionState } from "./types.js";
+import type { ConsentPolicy } from "./protocol.js";
 
 export interface ExperienceContext {
   sessionId: string;
   experienceId: string;
   approvedContext: Readonly<Record<string, unknown>>;
+  consentPolicy: ConsentPolicy;
   now: string;
 }
 

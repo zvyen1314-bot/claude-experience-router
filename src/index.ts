@@ -3,16 +3,19 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { listRecommendations } from "./catalog.js";
+import { PublicTopicService } from "./public-topics.js";
 import { ExperienceRuntime } from "./runtime.js";
-import { ModuleRegistry, defaultModulesDirectory } from "./registry.js";
+import { loadTrustedKeysFromEnvironment, ModuleRegistry, defaultModulesDirectory } from "./registry.js";
+import { createContextEnvelope } from "./protocol.js";
 import { startExperienceWebServer } from "./web.js";
 
 const server = new McpServer({
   name: "conversational-experience-router",
-  version: "0.1.0",
+  version: "0.5.0",
 });
 const registry = new ModuleRegistry();
 const runtime = new ExperienceRuntime(registry);
+const topics = new PublicTopicService();
 
 function jsonText(value: unknown): { content: [{ type: "text"; text: string }] } {
   return {
@@ -37,11 +40,237 @@ server.registerTool(
     },
   },
   async ({ intent, known_interests, max_results }) => {
+    const details = new Map(registry.listDetailed().map((entry) => [entry.manifest.id, entry]));
     return jsonText({
       kind: "experience_recommendations",
       privacy: "仅使用本次调用中传入的意图和用户已同意的兴趣线索。",
-      recommendations: listRecommendations(registry.list(), intent, known_interests ?? [], max_results),
+      recommendations: listRecommendations(registry.list(), intent, known_interests ?? [], max_results).map((recommendation) => ({
+        ...recommendation,
+        registry: details.get(recommendation.experience.id)
+          ? {
+              signature_status: details.get(recommendation.experience.id)?.signature_status,
+              versions: details.get(recommendation.experience.id)?.versions,
+            }
+          : undefined,
+      })),
       next_step: "向用户展示推荐并询问是否启动其中一个模块。",
+    });
+  },
+);
+
+server.registerTool(
+  "list_public_modules",
+  {
+    title: "List public experience modules",
+    description: "展示本地注册表中的公开体验模块，包括版本、权限、风险、发布者和签名状态。",
+    inputSchema: {
+      category: z.enum(["social", "game", "reflection"]).optional(),
+      require_trusted_signature: z.boolean().optional().default(false),
+      max_results: z.number().int().min(1).max(50).optional().default(20),
+    },
+  },
+  async ({ category, require_trusted_signature, max_results }) => {
+    const entries = registry.listDetailed()
+      .filter((entry) => !category || entry.manifest.category === category)
+      .filter((entry) => !require_trusted_signature || entry.signature_status === "trusted")
+      .slice(0, max_results)
+      .map((entry) => ({
+        id: entry.manifest.id,
+        version: entry.manifest.version,
+        name: entry.manifest.name,
+        tagline: entry.manifest.tagline,
+        description: entry.manifest.description,
+        category: entry.manifest.category,
+        capabilities: entry.manifest.capabilities,
+        risk_level: entry.manifest.riskLevel,
+        ui: entry.manifest.ui,
+        memory: entry.manifest.memory,
+        publisher: entry.manifest.publisher,
+        signature_status: entry.signature_status,
+        versions: entry.versions,
+      }));
+    return jsonText({ protocol: "experience-registry/v1", entries });
+  },
+);
+
+server.registerTool(
+  "discover_public_topics",
+  {
+    title: "Discover public topics",
+    description: "根据用户明确提供的兴趣发现公开话题；结果不包含私密匹配或自动私信。",
+    inputSchema: {
+      actor_id: z.string().min(1).max(120).optional().default("local-user"),
+      query: z.string().max(200).optional(),
+      interests: z.array(z.string().min(1).max(100)).max(20).optional(),
+      max_results: z.number().int().min(1).max(50).optional().default(10),
+    },
+  },
+  async ({ actor_id, query, interests, max_results }) => jsonText({
+    kind: "public_topics",
+    privacy: "仅返回公开话题；当前服务不提供自动私信或真人匹配。",
+    topics: topics.discover({ actorId: actor_id, query, interests, limit: max_results }),
+  }),
+);
+
+server.registerTool(
+  "create_public_topic",
+  {
+    title: "Create a public topic",
+    description: "创建一个公开话题。发布前应向用户展示公开可见范围和内容审核规则。",
+    inputSchema: {
+      actor_id: z.string().min(1).max(120),
+      title: z.string().min(3).max(120),
+      body: z.string().min(1).max(2000),
+      tags: z.array(z.string().min(1).max(40)).max(8).optional(),
+    },
+  },
+  async ({ actor_id, title, body, tags }) => jsonText({ status: "created", topic: topics.createTopic({ actorId: actor_id, title, body, tags }) }),
+);
+
+server.registerTool(
+  "join_public_room",
+  {
+    title: "Join a public discussion room",
+    description: "按需加入某个公开话题的讨论房间；房间只支持公开发言，不开启私信。",
+    inputSchema: {
+      actor_id: z.string().min(1).max(120),
+      topic_id: z.string().min(1),
+    },
+  },
+  async ({ actor_id, topic_id }) => jsonText({ status: "joined", room: topics.joinRoom(topic_id, actor_id) }),
+);
+
+server.registerTool(
+  "get_public_room",
+  {
+    title: "Read a public discussion room",
+    description: "读取一个公开讨论房间及当前可见消息。被拉黑的参与者内容不会返回。",
+    inputSchema: {
+      actor_id: z.string().min(1).max(120),
+      room_id: z.string().min(1),
+    },
+  },
+  async ({ actor_id, room_id }) => jsonText({ status: "ok", room: topics.getRoom(room_id, actor_id) }),
+);
+
+server.registerTool(
+  "post_public_message",
+  {
+    title: "Post in a public discussion room",
+    description: "在公开讨论房间发言。内容会进入公开审核队列，当前不提供私信。",
+    inputSchema: {
+      actor_id: z.string().min(1).max(120),
+      room_id: z.string().min(1),
+      body: z.string().min(1).max(2000),
+    },
+  },
+  async ({ actor_id, room_id, body }) => jsonText({ status: "posted", room: topics.postMessage(room_id, actor_id, body) }),
+);
+
+server.registerTool(
+  "report_public_content",
+  {
+    title: "Report public content",
+    description: "举报公开话题或公开消息；举报进入审核队列，不会自动将内容判定为违规。",
+    inputSchema: {
+      reporter_id: z.string().min(1).max(120),
+      target_type: z.enum(["topic", "message"]),
+      target_id: z.string().min(1),
+      reason: z.string().min(3).max(500),
+    },
+  },
+  async ({ reporter_id, target_type, target_id, reason }) => jsonText({
+    status: "queued",
+    report: topics.report({ reporterId: reporter_id, targetType: target_type, targetId: target_id, reason }),
+  }),
+);
+
+server.registerTool(
+  "list_public_reports",
+  {
+    title: "List public moderation reports",
+    description: "读取本地公开内容审核队列，供明确授权的审核者处理。",
+    inputSchema: {
+      status: z.enum(["queued", "dismissed", "hidden", "restored"]).optional(),
+    },
+  },
+  async ({ status }) => jsonText({ reports: topics.listReports(status) }),
+);
+
+server.registerTool(
+  "review_public_report",
+  {
+    title: "Review a public content report",
+    description: "由审核者对公开内容举报作出驳回、隐藏或恢复决定。",
+    inputSchema: {
+      reviewer_id: z.string().min(1).max(120),
+      report_id: z.string().min(1),
+      decision: z.enum(["dismiss", "hide", "restore"]),
+    },
+  },
+  async ({ reviewer_id, report_id, decision }) => jsonText({
+    status: "reviewed",
+    report: topics.reviewReport(report_id, reviewer_id, decision),
+  }),
+);
+
+server.registerTool(
+  "block_public_actor",
+  {
+    title: "Block a public actor",
+    description: "隐藏指定参与者在公开话题和房间中的内容，并阻止双方继续互动。",
+    inputSchema: {
+      actor_id: z.string().min(1).max(120),
+      blocked_actor_id: z.string().min(1).max(120),
+    },
+  },
+  async ({ actor_id, blocked_actor_id }) => jsonText(topics.blockActor(actor_id, blocked_actor_id)),
+);
+
+server.registerTool(
+  "unblock_public_actor",
+  {
+    title: "Unblock a public actor",
+    description: "恢复查看和参与指定公开参与者内容的能力。",
+    inputSchema: {
+      actor_id: z.string().min(1).max(120),
+      blocked_actor_id: z.string().min(1).max(120),
+    },
+  },
+  async ({ actor_id, blocked_actor_id }) => jsonText(topics.unblockActor(actor_id, blocked_actor_id)),
+);
+
+server.registerTool(
+  "create_context_envelope",
+  {
+    title: "Create a portable context envelope",
+    description:
+      "把用户明确选择共享的兴趣、时间和内容片段封装为可迁移的 Context Envelope。它不读取宿主的完整历史记录。",
+    inputSchema: {
+      intent: z.string().min(1).max(500).optional(),
+      interests: z.array(z.string().min(1).max(100)).max(50).optional(),
+      available_time_minutes: z.number().int().min(1).max(1440).optional(),
+      social_preference: z.enum(["private", "public_topics", "open_to_people"]).optional(),
+      selected_excerpts: z.array(z.string().min(1).max(4000)).max(10).optional(),
+      game_preferences: z.array(z.string().min(1).max(80)).max(20).optional(),
+      locale: z.string().min(2).max(20).optional(),
+      expires_in_minutes: z.number().int().min(1).max(10080).optional().default(60),
+    },
+  },
+  async ({ intent, interests, available_time_minutes, social_preference, selected_excerpts, game_preferences, locale, expires_in_minutes }) => {
+    return jsonText({
+      status: "ok",
+      envelope: createContextEnvelope({
+        intent,
+        interests,
+        availableTimeMinutes: available_time_minutes,
+        socialPreference: social_preference,
+        selectedExcerpts: selected_excerpts,
+        gamePreferences: game_preferences,
+        locale,
+        expiresInMinutes: expires_in_minutes,
+      }),
+      portability: "context-only; active consent tokens must be reissued by the target host",
     });
   },
 );
@@ -54,13 +283,12 @@ server.registerTool(
       "为用户选择的体验模块生成一次性、限时授权请求。宿主应先向用户展示权限范围，得到明确同意后再调用 launch_experience。",
     inputSchema: {
       experience_id: z.string().min(1).describe("discover_experiences 返回的模块 id"),
+      context_envelope: z.record(z.unknown()).optional().describe("用户明确同意共享的 Context Envelope"),
+      requested_scopes: z.array(z.string().min(1).max(100)).max(30).optional().describe("从模块声明的权限中选择的最小范围"),
     },
   },
-  async ({ experience_id }) => {
-    const request = runtime.prepareLaunch(experience_id);
-    return jsonText(request
-      ? { status: "consent_required", ...request }
-      : { status: "not_found", experience_id, message: "找不到这个体验模块。" });
+  async ({ experience_id, context_envelope, requested_scopes }) => {
+    return jsonText(runtime.prepareLaunch(experience_id, context_envelope, requested_scopes ?? []));
   },
 );
 
@@ -128,6 +356,34 @@ server.registerTool(
 );
 
 server.registerTool(
+  "get_consent_status",
+  {
+    title: "Get consent status",
+    description: "查询一次体验授权的当前状态、模块和权限范围，不返回 bearer token。",
+    inputSchema: {
+      consent_receipt_id: z.string().min(1),
+    },
+  },
+  async ({ consent_receipt_id }) => {
+    return jsonText(runtime.getConsentStatus(consent_receipt_id));
+  },
+);
+
+server.registerTool(
+  "revoke_consent",
+  {
+    title: "Revoke consent",
+    description: "撤销尚未使用的体验授权。已使用的会话不会被此工具伪装成未使用。",
+    inputSchema: {
+      consent_receipt_id: z.string().min(1),
+    },
+  },
+  async ({ consent_receipt_id }) => {
+    return jsonText(runtime.revokeConsent(consent_receipt_id));
+  },
+);
+
+server.registerTool(
   "create_experience_draft",
   {
     title: "Create an experience draft",
@@ -181,9 +437,10 @@ server.registerTool(
 
 async function main(): Promise<void> {
   const modulesDirectory = process.env.EXPERIENCE_MODULES_DIR ?? defaultModulesDirectory();
+  await loadTrustedKeysFromEnvironment(registry);
   await registry.loadFromDirectory(modulesDirectory);
   const requestedPort = Number.parseInt(process.env.EXPERIENCE_PORT ?? "4317", 10);
-  const web = await startExperienceWebServer(runtime, Number.isFinite(requestedPort) ? requestedPort : 4317);
+  const web = await startExperienceWebServer(runtime, Number.isFinite(requestedPort) ? requestedPort : 4317, topics);
   const transport = new StdioServerTransport();
   await server.connect(transport);
   const close = () => {

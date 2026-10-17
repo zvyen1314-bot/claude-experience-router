@@ -10,8 +10,8 @@
   "riskLevel": "low",
   "ui": "web",
   "memory": {
-    "reads": ["available time", "game preferences"],
-    "writes": ["game score"]
+    "reads": ["available_time_minutes", "game_preferences"],
+    "writes": ["game_score"]
   },
   "status": "ready",
   "runtime": "controlled-js",
